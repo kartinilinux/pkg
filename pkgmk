@@ -1,0 +1,241 @@
+#!/usr/bin/env janet
+
+(import spork/argparse :prefix "")
+
+(defn is-nil-or-empty-str [s] (or (= s nil) (= s "")))
+
+(def kartini-root (os/getenv "kartiniRoot"))
+(if (is-nil-or-empty-str kartini-root) (
+        (print "please set kartiniRoot environment variable first")
+        (os/exit 1)
+    )
+)
+
+(var kartini-data (os/getenv "kartiniData"))
+(if (is-nil-or-empty-str kartini-data) (
+        set kartini-data (string kartini-root "/Data")
+    )
+)
+
+(var kartini-packages (os/getenv "kartiniPackages"))
+(if (is-nil-or-empty-str kartini-packages) (
+        set kartini-packages (string kartini-data "/Packages")
+    )
+)
+
+# Utils
+
+(defn write-file 
+    ```
+    (write-file path content)
+
+    Write file on given path with given content then close file resource
+    ```
+    [path content] 
+    (def a-file (file/open (string path) :w))
+    (file/write a-file content)
+    (file/flush a-file)
+    (file/close a-file)
+)
+
+(defn read-file 
+    ```
+    (read-file path)
+
+    Function to read file in argument path, close file resource and return file content as string
+    ```
+    [path]
+    (let [a-file (file/open path :r)
+        file-content (file/read a-file :all)]
+    (file/close a-file)
+    file-content
+))
+
+(defn clone-git-repo 
+    [address path]
+    (def git-stdcode (os/shell "git"))
+    (if (not= git-stdcode 256 0)
+        (printf "git required to getting resources.")   
+        (os/exit 1)
+    )
+
+    (var git-clone (string "git clone " address  "-C " path))
+
+    (if (not= (os/shell git-clone) 0)
+        (return false)
+    )
+    (return true)
+)
+
+(defn grab-file-wget 
+    [address path]
+    (def wget-stdcode (os/shell "wget"))
+    (if (not= wget-stdcode  256 0)
+        (printf "git required to getting resources.")   
+        (os/exit 1)
+    )
+
+    (var wget-clone (string "wget " address ))
+    (if (not= (os/shell wget-clone) 0)
+        (return false)
+    )
+    (return true)
+)
+
+(defn get-current-pid []
+
+    # TODO: STUCK wait (os/getpid) implement in janet, put temporary file to handle pid with timesignature and cryptorand salt 
+    (defn create-time-sign "getting unique time signature" [] 
+        (let [{:seconds s
+            :minutes m
+            :hours h
+            :year-day d
+            :year Y
+            } (os/date)]
+            (string Y d h m s)))
+    
+    (if (= (os/shell "echo $PPID > /tmp/pkgmk-") 0)
+        (slurp "/")
+    )
+)
+
+# GENERATE RECIEPS
+
+(defn create-package-recipe 
+    ```
+    (create-package-recipe package-name package-version)
+
+    This function to create package recipe by given name and version in kartiniPackages path
+    ```
+    [package-name package-version] 
+    (def package-path 
+        (string kartini-packages "/Recipes" "/" package-name "/" package-version)
+    )
+
+    (os/shell (string "mkdir -p " package-path))
+
+    (write-file (string package-path "/build") "[make]")
+    (write-file (string package-path "/depens") "[dev]")
+    (write-file (string package-path "/release") "")
+    (write-file (string package-path "/sources") "")
+    (write-file (string package-path "/humans") "")
+    (write-file (string package-path "/revision") "1")
+)
+
+# BUILDING THE RECIEPS
+
+(defn build-procedure [package-name package-version]
+
+    # this path where the recipes stored
+    (def package-path 
+        (string kartini-packages "/Recipes" "/" package-name "/" package-version "/")
+    )
+
+    # this path where all sources will be stored after downloaded
+    (def package-source-path 
+        (string kartini-packages "/Sources" "/" package-name "/" package-version )
+    )
+
+    (def source-extraction-path "")
+
+    (def binary-extraction-path "")
+
+    (defn get-sources 
+        ``` 
+        (get-source)
+
+        this function to grab all remote source
+        ```
+        [] 
+        (def sources-content (string/split "\n" (read-file (string package-path "/sources"))))
+
+        (os/shell (string "mkdir -p " package-source-path))
+
+        (each sources sources-content
+            (def sources (string/split " " sources))
+
+            # the path where the grabed resource will stored, if supplied
+            (def extraction-folder (get sources 1))
+
+            # the url of sources, mandatory
+            (def source (get sources 0))
+
+            # the git address string pattern matcher
+            (def git-address 
+                '{ :proto (choice
+                        "ssh"
+                        "http"
+                        "https"
+                        "file"
+                    )
+                    :main (sequence "git+" :proto "://" :w*)
+                }
+            )
+
+            (def http-address 
+                '{ :proto (choice
+                        "ftp"
+                        "http"
+                        "https"
+                    )
+                    :main (sequence :proto "://" :w*)
+                })
+            
+            # check is the source file are git address
+            (if (not= (peg/match git-address source) nil)
+                (unless (clone-git-repo source (string package-source-path extraction-folder)
+                    (os/exit 1)
+                )
+            )
+
+            # check is the source file are remote file
+            (if (not= (peg/match http-address source) nil)
+                (unless (grab-file-wget source (string package-source-path extraction-folder)
+                    (os/exit 1)
+                )
+            )
+        )
+
+    )
+
+    (defn set-resource-for-build [] 
+        (def sources-content (string/split "\n" (read-file (string package-path "/sources"))))
+
+        (each sources sources-content
+            (def sources (string/split " " sources))
+
+            # the path where the grabed resource will stored, if supplied
+            (def extraction-folder (get sources 1))
+
+            # the url of sources, mandatory
+            (def source (get sources 0))
+
+
+        )
+    )
+)
+
+# COMMAND LINE HANDLER
+(def argparse-params
+  ["A package make tool"
+    :default {:kind :accumulate}
+    "force" {:kind :flag
+        :short "f"
+        :help "force thing to happend"
+        }
+    ])
+
+(defn cmds [cmd arg]
+    (match cmd
+        "build" (build-procedure (get arg 0) (get arg 1))
+        "gen" (create-package-reciep (get arg 0) (get arg 1))
+        _ (printf "this is %s \n" cmd)
+    )
+)
+
+(let [res (argparse ;argparse-params)]
+  (unless res
+    (os/exit 1))
+  (def cmd (get res :default))
+  (cmds (get cmd 0) (array/slice cmd 1 -1))
+)
